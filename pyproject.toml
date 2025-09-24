@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Modelling of an epidemic"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "dash>=3.2.0",
+]
 
 [build-system]
 requires = ["setuptools>=42", "wheel"]
