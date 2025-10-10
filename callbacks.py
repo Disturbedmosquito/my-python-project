@@ -133,6 +133,9 @@ def register_callbacks(app):
             if plot_type == "sircp_dashboard":
                 from models.sircp_dash import plot_sircp_dashboard
                 fig = plot_sircp_dashboard(t, compartments, meta)
+            elif plot_type == "sicr_pf_dashboard":
+                from models.sicr_pf import plot_sicr_pf_dashboard
+                fig = plot_sicr_pf_dashboard(t, compartments, meta)
             else:
                 raise ValueError(f"Unknown plot type: {plot_type}")
 

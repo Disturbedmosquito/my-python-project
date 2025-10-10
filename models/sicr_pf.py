@@ -1,63 +1,100 @@
 #!/usr/bin/env python3
 #
-# SICR-P model
-# P(t) as a function of reported cases C(t) with a sigmoid response for compliance
+# SICR-PF model
+# SIR variant model using P-F (Perceived Risk - Response Fatigue) dynamics.
+# See associated publication for details
 #
 # S = Susceptible
 # I = infected
 # C = Reported Case
 # R = Recovered/Removed
+
 # P = Perceived Risk
+# F = Behavioral Fatigue
 #
-# beta = transmission rate per person
+# beta_0 = baseline infection rate
 # gamma = recovery rate (1/gamma = infectuosity period)
-# alpha = perception growth factor
-# delta = perception decay rate
 # rho = reporting rate (average time from infection to report = 1/rho)
-# k = risk perception sensibility
+# alpha = perception growth factor (fast)
+# delta0: baseline perception decay
+# gamma_F: Perception's sensibility to fatigue
+# epsilon: accumulation speed of F from P
+# phi: fatigue decay rate (slow)
 
 import numpy as np
 from scipy.integrate import solve_ivp
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+
 ###### MODEL DEFINITION ######
-def sirp_ode_sigmoid(t, y, N, beta_0, gamma, alpha, delta, compliance_max, k, rho, P0=0):
-    S, I, C, R, P = y
-    compliance = compliance_max / (1 + np.exp(-k * (P - P0)))
-    beta_eff = beta_0 * (1 - compliance)
+def sicr_pf_model(
+    t, y, N, beta_0, gamma, rho,
+    alpha, delta0, compliance_max,
+    gamma_F, epsilon, phi,        # <- fatigue params
+    beta_floor=0.2                    # 20% floor on beta
+):
+    """
+    SICR + PF (perceived risk and fatigue) with bounded, asymmetric dynamics:
+      - P: fast-reacting, inhibited by F, quick decay
+      - F: slow leaky accumulator of P, very slow decay
+    All states P,F remain in [0,1] by inflow_outflow structure.
+    """
+
+    S, I, C, R, P, F = y
+
+    #Compliance and beta_eff (bounded to reflect real world)
+    compliance = np.clip(compliance_max * P, 0, 1)  # elementwise clamp in [0, 1]
+
+    beta_min = beta_0 * beta_floor
+    beta_eff = beta_min + (beta_0 - beta_min) * (1.0 - compliance)
+    beta_eff = np.clip(beta_eff, beta_min, beta_0)  # elementwise clamp in [beta_min, beta_0]
+
+
+    #Infection force
     total_infected = I + C
     incidence = beta_eff * S * total_infected / N
 
-    dSdt = -incidence
+    #Tiny seeding and waning immunity (could be a population replacement too)
+    eta   = 1e-8
+    omega = 1.0 / 180.0
+
+    #SICR
+    dSdt = -incidence + omega * R
     dIdt = incidence - (gamma + rho) * I
     dCdt = rho * I - gamma * C
-    dRdt = gamma * (I + C)
-    dPdt = alpha * C - delta * P
+    dRdt = gamma * (I + C) - omega * R
 
-    return [dSdt, dIdt, dCdt, dRdt, dPdt]
+    #Perceived risk: fast, inhibited by fatigue, quick decay
+    dPdt = alpha * (C / N) * (1.0 - P) - (delta0 + gamma_F * F) * P
+    #Fatigue: leaky integrator of P with very slow decay
+    dFdt = epsilon * P * (1.0 - F) - phi * F
+
+    return [dSdt, dIdt, dCdt, dRdt, dPdt, dFdt]
+
+
 
 ###### WRAPPER FOR DASH ######
-def run_sirp_with_compliance(I0=10, beta=0.5, gamma=0.1, alpha=5e-3, delta=0.02,
-                             compliance_max=0.5, k=3, rho=0.05, N=100_000):
-    initial_conditions = [N - I0, I0, 0, 0, 0]
-    t_span = (0, 360)
+def run_sicr_pf(I0=10, N=100_000, beta_0=0.25, gamma=0.1, rho=0.01, alpha=0.1, delta=0.016,
+                             compliance_max=0.6, gamma_F=1, epsilon=0.0083, phi=0.002):
+    initial_conditions = [N - I0, I0, 0, 0, 0, 0]   # S0, I0, C0, R0, P0, F0
+    t_span = (0, 400)
     t_eval = np.linspace(t_span[0], t_span[1], int((t_span[1] - t_span[0]) * 2) + 1)
 
     sol = solve_ivp(
-        sirp_ode_sigmoid,
+        sicr_pf_model,
         t_span,
         initial_conditions,
-        args=(N, beta, gamma, alpha, delta, compliance_max, k, rho),
+        args=(N, beta_0, gamma, rho, alpha, delta, compliance_max, gamma_F, epsilon, phi),
         t_eval=t_eval,
-        method="RK45"
+        method="LSODA"
     )
 
     # Extract compartments
-    S, I, C, R, P = sol.y
+    S, I, C, R, P, F = sol.y
 
     # Metadata
-    R0_basic = beta / gamma
+    R0_basic = beta_0 / gamma
     if R0_basic > 1:
         state = "Epidemic will occur"
     elif R0_basic < 1:
@@ -65,25 +102,30 @@ def run_sirp_with_compliance(I0=10, beta=0.5, gamma=0.1, alpha=5e-3, delta=0.02,
     else:
         state = "Disease will become endemic"
 
-    compliance = compliance_max * (1 - np.exp(-k * P))
-    beta_eff = beta * (1 - compliance)
+    compliance = np.clip(compliance_max * P, 0, 1)  # elementwise clamp in [0, 1]
+
+    beta_min = beta_0 * 0.2
+    beta_eff = beta_min + (beta_0 - beta_min) * (1.0 - compliance)
+    beta_eff = np.clip(beta_eff, beta_min, beta_0)  # elementwise clamp in [beta_min, beta_0]
 
     meta = {
         "compliance": compliance,
         "beta_eff": beta_eff,
-        "beta_0": beta,
+        "beta_0": beta_0,
         "R0": R0_basic,
         "state": state,
         "rho": rho
     }
 
-    return sol.t, [S, I, C, R, P], meta
+    return sol.t, [S, I, C, R, P, F], meta
+
+
 
 ###### PLOTLY DASHBOARD ######
-def plot_sircp_dashboard(t, compartments, meta):
+def plot_sicr_pf_dashboard(t, compartments, meta):
     # Unpack data
     try: 
-        S, I, C, R, P = compartments
+        S, I, C, R, P, F = compartments
     except ValueError:
         raise ValueError("Expected compartments not match the provided data.")
     
@@ -218,6 +260,8 @@ def plot_sircp_dashboard(t, compartments, meta):
                             line=dict(color="magenta", width=3), showlegend=False), row=1, col=2)
     fig.add_trace(go.Scatter(x=t, y=compliance, mode="lines", name="Compliance",
                             line=dict(color="cyan", dash="dash", width=2), showlegend=False), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=F, mode="lines", name="Fatigue (F)",
+                            line=dict(color="gray", width=3), showlegend=False), row=1, col=2)
     fig.update_yaxes(title_text="Level", row=1, col=2)
 
     # Plot 3: Transmission (left) vs Cases (right)

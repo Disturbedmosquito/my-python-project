@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 #
-# SICR-P model
-# P(t) as a function of reported cases C(t) with a sigmoid response for compliance
-#
+# Implementation of SICR+P model
+
 # S = Susceptible
 # I = infected
 # C = Reported Case
@@ -22,30 +21,33 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 ###### MODEL DEFINITION ######
-def sirp_ode_sigmoid(t, y, N, beta_0, gamma, alpha, delta, compliance_max, k, rho, P0=0):
+def sirp_ode(t, y, N, beta_0, gamma, alpha, delta, compliance_max, k, rho):
     S, I, C, R, P = y
-    compliance = compliance_max / (1 + np.exp(-k * (P - P0)))
+    
+    # Compliance effect
+    compliance = compliance_max * (1 - np.exp(-k * P))
     beta_eff = beta_0 * (1 - compliance)
+    
     total_infected = I + C
     incidence = beta_eff * S * total_infected / N
 
-    dSdt = -incidence
-    dIdt = incidence - (gamma + rho) * I
-    dCdt = rho * I - gamma * C
-    dRdt = gamma * (I + C)
-    dPdt = alpha * C - delta * P
+    dSdt = -incidence                       # Susceptible
+    dIdt = incidence - (gamma + rho) * I    # Infected
+    dCdt = rho * I - gamma * C              # Reported Cases
+    dRdt = gamma * (I + C)                  # Recovered
+    dPdt = alpha * C - delta * P            # Perceived Risk
 
     return [dSdt, dIdt, dCdt, dRdt, dPdt]
 
 ###### WRAPPER FOR DASH ######
-def run_sirp_with_compliance(I0=10, beta=0.5, gamma=0.1, alpha=5e-3, delta=0.02,
-                             compliance_max=0.5, k=3, rho=0.05, N=100_000):
+def run_sirp_with_compliance(I0=10, beta=0.5, gamma=1/10, alpha=1e-5, delta=0.05,
+                             compliance_max=0.75, k=1, rho=0.011, N=100_000):
     initial_conditions = [N - I0, I0, 0, 0, 0]
-    t_span = (0, 360)
+    t_span = (0, 160)
     t_eval = np.linspace(t_span[0], t_span[1], int((t_span[1] - t_span[0]) * 2) + 1)
 
     sol = solve_ivp(
-        sirp_ode_sigmoid,
+        sirp_ode,
         t_span,
         initial_conditions,
         args=(N, beta, gamma, alpha, delta, compliance_max, k, rho),
@@ -97,8 +99,7 @@ def plot_sircp_dashboard(t, compartments, meta):
     except ValueError:
         raise ValueError("Expected meta not match the provided data.")
 
-    # -----------------------------------
-    # HELPERS
+    # ---------- helper functions ----------
     
     def subplot_index(row, col):
         ncols = 2
@@ -119,7 +120,6 @@ def plot_sircp_dashboard(t, compartments, meta):
             layer="above",
         )
 
-    # Because Plotly sucks
     def add_local_legend(fig, row, col, labels_colors, x_right=0.98, y_top=0.98, font_size=14):
         """
         Adds a simple fake legend box with text-based line samples.
@@ -173,10 +173,8 @@ def plot_sircp_dashboard(t, compartments, meta):
                 align="left", xanchor="left", yanchor="top"
             )
 
-    # END OF HELPERS
-    # -----------------------------------
 
-    # compute tick spacing (8 intervals -> 9 ticks)
+    # ---------- compute tick spacing (8 intervals -> 9 ticks) ----------
     t_max = float(np.max(t))
     ticks_count = 8  # 8 intervals (so 9 tick positions)
     raw_ticks = np.linspace(0.0, t_max, ticks_count + 1)
@@ -186,7 +184,7 @@ def plot_sircp_dashboard(t, compartments, meta):
     else:
         tickvals = [round(float(v), 1) for v in raw_ticks]
 
-    # build subplots 
+    # ---------- build subplots ----------
     fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=(
@@ -201,7 +199,7 @@ def plot_sircp_dashboard(t, compartments, meta):
         vertical_spacing=0.07
     )
 
-    # dd traces (turn off global legend; fake local legends will be used)
+    # --- Add traces (turn off global legend; fake local legends will be used) ---
     # Plot 1: Compartments
     fig.add_trace(go.Scatter(x=t, y=S, mode="lines", name="Susceptible",
                             line=dict(color="royalblue", width=3), showlegend=False), row=1, col=1)
